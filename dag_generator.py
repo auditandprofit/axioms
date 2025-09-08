@@ -57,65 +57,86 @@ class DAG:
         return [build(root) for root in roots]
 
 
-FUNCTIONS = [
-    {
-        "name": "stop_expansion",
-        "description": "Indicate that the given node has no further children.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "node": {
-                    "type": "string",
-                    "description": "Node that should not be expanded further",
-                }
-            },
-            "required": ["node"],
-        },
-    },
-    {
-        "name": "new_edges",
-        "description": "Return a list of child nodes to attach to the given node.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "node": {
-                    "type": "string",
-                    "description": "Parent node being expanded",
+def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
+    functions = [
+        {
+            "name": "stop_expansion",
+            "description": "Indicate that the given node has no further children.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node": {
+                        "type": "string",
+                        "description": "Node that should not be expanded further",
+                    }
                 },
-                "children": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Names of child nodes",
-                },
+                "required": ["node"],
             },
-            "required": ["node", "children"],
         },
-    },
-]
+        {
+            "name": "new_edges",
+            "description": "Return a list of child nodes to attach to the given node.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node": {
+                        "type": "string",
+                        "description": "Parent node being expanded",
+                    },
+                    "children": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Names of child nodes",
+                    },
+                },
+                "required": ["node", "children"],
+            },
+        },
+    ]
+    if max_fanout is not None:
+        functions[1]["parameters"]["properties"]["children"]["maxItems"] = max_fanout
+    return functions
 
-SYSTEM_PROMPT = (
-    "You expand nodes in a directed acyclic graph. "
-    "Use the 'stop_expansion' function when no further ideas are needed. "
-    "Use 'new_edges' to suggest new child nodes to explore. "
-    "For each node, call exactly one function: either 'new_edges' or 'stop_expansion'."
-)
+
+def make_system_prompt(max_fanout: Optional[int]) -> str:
+    prompt = (
+        "You expand nodes in a directed acyclic graph. "
+        "Use the 'stop_expansion' function when no further ideas are needed. "
+        "Use 'new_edges' to suggest new child nodes to explore. "
+        "For each node, call exactly one function: either 'new_edges' or 'stop_expansion'."
+    )
+    if max_fanout is not None:
+        prompt += f" Do not propose more than {max_fanout} child nodes per parent."
+    return prompt
 
 
 async def expand_layer(
-    client: "AsyncOpenAI", context: str, nodes: List[str]
+    client: "AsyncOpenAI",
+    context: str,
+    nodes: List[str],
+    max_fanout: Optional[int] = None,
 ) -> Dict[str, List[str]]:
-    """Expand all nodes in ``nodes`` using a single batched request."""
+    """Expand all nodes in ``nodes`` using a single batched request.
+
+    Args:
+        client: OpenAI client used to make the request.
+        context: Conversation context so far.
+        nodes: Nodes to expand.
+        max_fanout: Maximum number of children the model may return per node.
+    """
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": make_system_prompt(max_fanout)},
         {"role": "user", "content": context},
         {"role": "user", "content": "Expand the following nodes:\n" + "\n".join(nodes)},
     ]
 
+    functions = make_functions(max_fanout)
+
     response = await client.responses.create(
         model="gpt-4o-mini",
         input=messages,
-        tools=[{**f, "type": "function"} for f in FUNCTIONS],
+        tools=[{**f, "type": "function"} for f in functions],
         tool_choice="auto",
         parallel_tool_calls=False,
     )
@@ -164,7 +185,9 @@ async def build_dag(
             file=sys.stderr,
         )
 
-        expansions = await expand_layer(client, "\n".join(context_lines), nodes)
+        expansions = await expand_layer(
+            client, "\n".join(context_lines), nodes, max_fanout
+        )
 
         new_queue: List[Tuple[str, int]] = []
         context_lines.append(f"Layer {layer}:")
