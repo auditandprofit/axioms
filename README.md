@@ -9,8 +9,8 @@ OpenAI's function calling API.
 python dag_generator.py "root node"
 ```
 
-The script now also accepts seed prompts from a file using the `--seed-file`
-flag. Each line in the file is treated as a separate seed node:
+The script now also accepts a seed prompt from a file using the `--seed-file`
+flag. The entire contents of the file are treated as a single seed node:
 
 ```bash
 python dag_generator.py --seed-file seeds.txt
