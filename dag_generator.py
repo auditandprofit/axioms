@@ -16,7 +16,23 @@ class DAG:
 
     edges: Dict[str, List[str]] = field(default_factory=dict)
 
+    def _has_path(self, start: str, target: str, visited: Optional[set] = None) -> bool:
+        """Return True if ``target`` is reachable from ``start``."""
+        if start == target:
+            return True
+        if visited is None:
+            visited = set()
+        if start in visited:
+            return False
+        visited.add(start)
+        for nxt in self.edges.get(start, []):
+            if self._has_path(nxt, target, visited):
+                return True
+        return False
+
     def add_edge(self, parent: str, child: str) -> None:
+        if self._has_path(child, parent):
+            raise ValueError(f"Adding edge {parent!r}->{child!r} would create a cycle")
         self.edges.setdefault(parent, []).append(child)
         self.edges.setdefault(child, [])
 
@@ -27,11 +43,15 @@ class DAG:
         fields, where ``children`` is a list of nodes in the same format.
         """
 
-        def build(node: str) -> Dict[str, Any]:
-            return {
-                "content": node,
-                "children": [build(child) for child in self.edges.get(node, [])],
-            }
+        def build(node: str, path: Optional[set] = None) -> Dict[str, Any]:
+            if path is None:
+                path = set()
+            if node in path:
+                raise ValueError(f"Cycle detected at node {node!r}")
+            children = [
+                build(child, path | {node}) for child in self.edges.get(node, [])
+            ]
+            return {"content": node, "children": children}
 
         return [build(root) for root in roots]
 
