@@ -72,7 +72,7 @@ async def expand_node(
     response = await client.responses.create(
         model="gpt-4o-mini",
         input=messages,
-        tools=[{"type": "function", "function": f} for f in FUNCTIONS],
+        tools=[{**f, "type": "function"} for f in FUNCTIONS],
         tool_choice="auto",
     )
 
