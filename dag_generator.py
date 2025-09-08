@@ -60,22 +60,35 @@ class DAG:
 FUNCTIONS = [
     {
         "name": "stop_expansion",
-        "description": "Indicate that the current node has no further children.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "new_edges",
-        "description": "Return a list of child nodes to attach to the current node.",
+        "description": "Indicate that the given node has no further children.",
         "parameters": {
             "type": "object",
             "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Node that should not be expanded further",
+                }
+            },
+            "required": ["node"],
+        },
+    },
+    {
+        "name": "new_edges",
+        "description": "Return a list of child nodes to attach to the given node.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node": {
+                    "type": "string",
+                    "description": "Parent node being expanded",
+                },
                 "children": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Names of child nodes",
-                }
+                },
             },
-            "required": ["children"],
+            "required": ["node", "children"],
         },
     },
 ]
@@ -87,23 +100,16 @@ SYSTEM_PROMPT = (
 )
 
 
-async def expand_node(
-    client: "AsyncOpenAI", base_input: str, node: Optional[str]
-) -> Tuple[str, List[str]]:
-    """Ask the model to expand a single node.
+async def expand_layer(
+    client: "AsyncOpenAI", context: str, nodes: List[str]
+) -> Dict[str, List[str]]:
+    """Expand all nodes in ``nodes`` using a single batched request."""
 
-    The model always receives the original ``base_input`` along with the
-    ``node`` being expanded to mirror the flow:
-        system prompt + input text + new obj -> function call
-    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": base_input},
+        {"role": "user", "content": context},
+        {"role": "user", "content": "Expand the following nodes:\n" + "\n".join(nodes)},
     ]
-    parent = base_input
-    if node is not None:
-        messages.append({"role": "user", "content": node})
-        parent = node
 
     response = await client.responses.create(
         model="gpt-5",
@@ -112,18 +118,21 @@ async def expand_node(
         tool_choice="auto",
     )
 
-    name = None
-    arguments = "{}"
+    expansions: Dict[str, List[str]] = {}
     for item in response.output or []:
         if getattr(item, "type", None) == "function_call":
             name = getattr(item, "name", None)
             arguments = getattr(item, "arguments", "{}")
-            break
-    payload = json.loads(arguments)
+            payload = json.loads(arguments)
+            node = payload.get("node")
+            if not node:
+                continue
+            if name == "new_edges":
+                expansions[node] = payload.get("children", [])
+            elif name == "stop_expansion":
+                expansions[node] = []
 
-    if name == "new_edges":
-        return parent, payload.get("children", [])
-    return parent, []
+    return expansions
 
 
 async def build_dag(
@@ -134,55 +143,52 @@ async def build_dag(
 ) -> DAG:
     if AsyncOpenAI is None:
         raise RuntimeError("openai package is required to run this script")
+
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     dag = DAG()
-    queue: List[Tuple[str, Optional[str], int]] = []
+
+    queue: List[Tuple[str, int]] = []
     if max_depth is None or max_depth > 0:
-        queue = [(seed, None, 0) for seed in seeds]
+        queue = [(seed, 0) for seed in seeds]
+
     seen = set(seeds)
+    context_lines = ["Seeds:"] + seeds
 
     while queue and len(dag.edges) < max_nodes:
-        layer = queue[0][2]
-        tasks: List[asyncio.Task] = []
-        in_flight = 0
-        for base, node, _ in queue:
-            tasks.append(asyncio.create_task(expand_node(client, base, node)))
-            in_flight += 1
-            print(
-                f"Layer {layer}: {in_flight} node(s) in flight",
-                end="\r",
-                flush=True,
-                file=sys.stderr,
-            )
-        results: List[Tuple[str, List[str]]] = []
-        for task in asyncio.as_completed(tasks):
-            result = await task
-            results.append(result)
-            in_flight -= 1
-            print(
-                f"Layer {layer}: {in_flight} node(s) in flight",
-                end="\r",
-                flush=True,
-                file=sys.stderr,
-            )
-        print(file=sys.stderr)
-        new_queue: List[Tuple[str, Optional[str], int]] = []
-        for (base, _, depth), (parent, children) in zip(queue, results):
+        layer = queue[0][1]
+        nodes = [node for node, _ in queue]
+        print(
+            f"Layer {layer}: expanding {len(nodes)} node(s)",
+            file=sys.stderr,
+        )
+
+        expansions = await expand_layer(client, "\n".join(context_lines), nodes)
+
+        new_queue: List[Tuple[str, int]] = []
+        context_lines.append(f"Layer {layer}:")
+        for parent in nodes:
+            children = expansions.get(parent, [])
             if max_fanout is not None:
                 children = children[:max_fanout]
+            context_lines.append(
+                f"{parent} -> {', '.join(children) if children else '(none)'}"
+            )
             for child in children:
+                dag.add_edge(parent, child)
                 if child not in seen:
                     seen.add(child)
-                    if max_depth is None or depth + 1 < max_depth:
-                        new_queue.append((base, child, depth + 1))
-                dag.add_edge(parent, child)
+                    if max_depth is None or layer + 1 < max_depth:
+                        new_queue.append((child, layer + 1))
+
         if new_queue:
-            next_layer = new_queue[0][2]
+            next_layer = new_queue[0][1]
             print(
                 f"Layer {next_layer} discovered with {len(new_queue)} node(s)",
                 file=sys.stderr,
             )
+
         queue = new_queue
+
     return dag
 
 
