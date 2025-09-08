@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -134,8 +135,26 @@ async def build_dag(seeds: List[str], max_nodes: int = 50) -> DAG:
     seen = set(seeds)
 
     while queue and len(dag.edges) < max_nodes:
-        tasks = [expand_node(client, base, node) for base, node in queue]
-        results = await asyncio.gather(*tasks)
+        tasks = [asyncio.create_task(expand_node(client, base, node)) for base, node in queue]
+        in_flight = len(tasks)
+        print(
+            f"Requests in flight: {in_flight}",
+            end="\r",
+            flush=True,
+            file=sys.stderr,
+        )
+        results: List[Tuple[str, List[str]]] = []
+        for task in asyncio.as_completed(tasks):
+            result = await task
+            results.append(result)
+            in_flight -= 1
+            print(
+                f"Requests in flight: {in_flight}",
+                end="\r",
+                flush=True,
+                file=sys.stderr,
+            )
+        print(file=sys.stderr)
         new_queue: List[Tuple[str, Optional[str]]] = []
         for (base, _), (parent, children) in zip(queue, results):
             for child in children:
