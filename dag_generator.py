@@ -194,7 +194,7 @@ def main() -> None:
     parser.add_argument(
         "--seed-file",
         type=argparse.FileType("r"),
-        help="Path to a file containing seed nodes, one per line",
+        help="Path to a file whose entire contents form a single seed node",
     )
     parser.add_argument(
         "--max-nodes", type=int, default=50, help="Maximum number of nodes to generate"
@@ -216,7 +216,9 @@ def main() -> None:
     seeds = list(args.seed)
     if args.seed_file:
         with args.seed_file as f:
-            seeds.extend(line.strip() for line in f if line.strip())
+            content = f.read().strip()
+            if content:
+                seeds.append(content)
 
     if not seeds:
         parser.error("No seeds provided. Specify positional seeds or use --seed-file.")
