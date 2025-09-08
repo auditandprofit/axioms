@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from openai import AsyncOpenAI
@@ -19,6 +19,21 @@ class DAG:
     def add_edge(self, parent: str, child: str) -> None:
         self.edges.setdefault(parent, []).append(child)
         self.edges.setdefault(child, [])
+
+    def to_nested(self, roots: List[str]) -> List[Dict[str, Any]]:
+        """Convert the internal edge mapping to a nested structure.
+
+        Each node is represented as an object with ``content`` and ``children``
+        fields, where ``children`` is a list of nodes in the same format.
+        """
+
+        def build(node: str) -> Dict[str, Any]:
+            return {
+                "content": node,
+                "children": [build(child) for child in self.edges.get(node, [])],
+            }
+
+        return [build(root) for root in roots]
 
 
 FUNCTIONS = [
@@ -121,7 +136,8 @@ def main() -> None:
     args = parser.parse_args()
 
     dag = asyncio.run(build_dag(args.seed, args.max_nodes))
-    print(json.dumps(dag.edges, indent=2))
+    nested = dag.to_nested(args.seed)
+    print(json.dumps(nested, indent=2))
 
 
 if __name__ == "__main__":
