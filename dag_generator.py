@@ -96,7 +96,8 @@ FUNCTIONS = [
 SYSTEM_PROMPT = (
     "You expand nodes in a directed acyclic graph. "
     "Use the 'stop_expansion' function when no further ideas are needed. "
-    "Use 'new_edges' to suggest new child nodes to explore."
+    "Use 'new_edges' to suggest new child nodes to explore. "
+    "For each node, call exactly one function: either 'new_edges' or 'stop_expansion'."
 )
 
 
@@ -116,6 +117,7 @@ async def expand_layer(
         input=messages,
         tools=[{**f, "type": "function"} for f in FUNCTIONS],
         tool_choice="auto",
+        parallel_tool_calls=False,
     )
 
     expansions: Dict[str, List[str]] = {}
