@@ -151,12 +151,27 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Generate a DAG using OpenAI function calls")
-    parser.add_argument("seed", nargs="+", help="Seed node(s) to start expansion")
-    parser.add_argument("--max-nodes", type=int, default=50, help="Maximum number of nodes to generate")
+    parser.add_argument("seed", nargs="*", help="Seed node(s) to start expansion")
+    parser.add_argument(
+        "--seed-file",
+        type=argparse.FileType("r"),
+        help="Path to a file containing seed nodes, one per line",
+    )
+    parser.add_argument(
+        "--max-nodes", type=int, default=50, help="Maximum number of nodes to generate"
+    )
     args = parser.parse_args()
 
-    dag = asyncio.run(build_dag(args.seed, args.max_nodes))
-    nested = dag.to_nested(args.seed)
+    seeds = list(args.seed)
+    if args.seed_file:
+        with args.seed_file as f:
+            seeds.extend(line.strip() for line in f if line.strip())
+
+    if not seeds:
+        parser.error("No seeds provided. Specify positional seeds or use --seed-file.")
+
+    dag = asyncio.run(build_dag(seeds, args.max_nodes))
+    nested = dag.to_nested(seeds)
     print(json.dumps(nested, indent=2))
 
 
