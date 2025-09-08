@@ -69,16 +69,20 @@ async def expand_node(
         messages.append({"role": "user", "content": node})
         parent = node
 
-    completion = await client.chat.completions.create(
+    response = await client.responses.create(
         model="gpt-4o-mini",
-        messages=messages,
-        functions=FUNCTIONS,
-        function_call="auto",
+        input=messages,
+        tools=[{"type": "function", "function": f} for f in FUNCTIONS],
+        tool_choice="auto",
     )
-    message = completion.choices[0].message
-    call = message.get("function_call") or {}
-    name = call.get("name")
-    arguments = call.get("arguments", "{}")
+
+    name = None
+    arguments = "{}"
+    for item in response.output or []:
+        if getattr(item, "type", None) == "function_call":
+            name = getattr(item, "name", None)
+            arguments = getattr(item, "arguments", "{}")
+            break
     payload = json.loads(arguments)
 
     if name == "new_edges":
