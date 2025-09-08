@@ -142,24 +142,25 @@ async def build_dag(
     seen = set(seeds)
 
     while queue and len(dag.edges) < max_nodes:
-        tasks = [
-            asyncio.create_task(expand_node(client, base, node))
-            for base, node, _ in queue
-        ]
-        in_flight = len(tasks)
-        print(
-            f"Requests in flight: {in_flight}",
-            end="\r",
-            flush=True,
-            file=sys.stderr,
-        )
+        layer = queue[0][2]
+        tasks: List[asyncio.Task] = []
+        in_flight = 0
+        for base, node, _ in queue:
+            tasks.append(asyncio.create_task(expand_node(client, base, node)))
+            in_flight += 1
+            print(
+                f"Layer {layer}: {in_flight} node(s) in flight",
+                end="\r",
+                flush=True,
+                file=sys.stderr,
+            )
         results: List[Tuple[str, List[str]]] = []
         for task in asyncio.as_completed(tasks):
             result = await task
             results.append(result)
             in_flight -= 1
             print(
-                f"Requests in flight: {in_flight}",
+                f"Layer {layer}: {in_flight} node(s) in flight",
                 end="\r",
                 flush=True,
                 file=sys.stderr,
@@ -175,6 +176,12 @@ async def build_dag(
                     if max_depth is None or depth + 1 < max_depth:
                         new_queue.append((base, child, depth + 1))
                 dag.add_edge(parent, child)
+        if new_queue:
+            next_layer = new_queue[0][2]
+            print(
+                f"Layer {next_layer} discovered with {len(new_queue)} node(s)",
+                file=sys.stderr,
+            )
         queue = new_queue
     return dag
 
