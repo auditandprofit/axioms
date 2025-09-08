@@ -1,2 +1,17 @@
 # axioms
-a
+
+Utility script for generating a small directed acyclic graph (DAG) using
+OpenAI's function calling API.
+
+## Usage
+
+```bash
+python dag_generator.py "root node"
+```
+
+The script now also accepts seed prompts from a file using the `--seed-file`
+flag. Each line in the file is treated as a separate seed node:
+
+```bash
+python dag_generator.py --seed-file seeds.txt
+```
