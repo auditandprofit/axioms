@@ -126,16 +126,26 @@ async def expand_node(
     return parent, []
 
 
-async def build_dag(seeds: List[str], max_nodes: int = 50) -> DAG:
+async def build_dag(
+    seeds: List[str],
+    max_nodes: int = 50,
+    max_depth: Optional[int] = None,
+    max_fanout: Optional[int] = None,
+) -> DAG:
     if AsyncOpenAI is None:
         raise RuntimeError("openai package is required to run this script")
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     dag = DAG()
-    queue: List[Tuple[str, Optional[str]]] = [(seed, None) for seed in seeds]
+    queue: List[Tuple[str, Optional[str], int]] = []
+    if max_depth is None or max_depth > 0:
+        queue = [(seed, None, 0) for seed in seeds]
     seen = set(seeds)
 
     while queue and len(dag.edges) < max_nodes:
-        tasks = [asyncio.create_task(expand_node(client, base, node)) for base, node in queue]
+        tasks = [
+            asyncio.create_task(expand_node(client, base, node))
+            for base, node, _ in queue
+        ]
         in_flight = len(tasks)
         print(
             f"Requests in flight: {in_flight}",
@@ -155,12 +165,15 @@ async def build_dag(seeds: List[str], max_nodes: int = 50) -> DAG:
                 file=sys.stderr,
             )
         print(file=sys.stderr)
-        new_queue: List[Tuple[str, Optional[str]]] = []
-        for (base, _), (parent, children) in zip(queue, results):
+        new_queue: List[Tuple[str, Optional[str], int]] = []
+        for (base, _, depth), (parent, children) in zip(queue, results):
+            if max_fanout is not None:
+                children = children[:max_fanout]
             for child in children:
                 if child not in seen:
                     seen.add(child)
-                    new_queue.append((base, child))
+                    if max_depth is None or depth + 1 < max_depth:
+                        new_queue.append((base, child, depth + 1))
                 dag.add_edge(parent, child)
         queue = new_queue
     return dag
@@ -179,6 +192,18 @@ def main() -> None:
     parser.add_argument(
         "--max-nodes", type=int, default=50, help="Maximum number of nodes to generate"
     )
+    parser.add_argument(
+        "--max-depth",
+        type=int,
+        default=None,
+        help="Maximum depth to expand (0 disables expansion)",
+    )
+    parser.add_argument(
+        "--max-fanout",
+        type=int,
+        default=None,
+        help="Maximum number of children per node",
+    )
     args = parser.parse_args()
 
     seeds = list(args.seed)
@@ -189,7 +214,14 @@ def main() -> None:
     if not seeds:
         parser.error("No seeds provided. Specify positional seeds or use --seed-file.")
 
-    dag = asyncio.run(build_dag(seeds, args.max_nodes))
+    dag = asyncio.run(
+        build_dag(
+            seeds,
+            args.max_nodes,
+            args.max_depth,
+            args.max_fanout,
+        )
+    )
     nested = dag.to_nested(seeds)
     print(json.dumps(nested, indent=2))
 
