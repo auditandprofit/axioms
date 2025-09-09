@@ -17,6 +17,14 @@ _LOG_DIR: Optional[Path] = None
 _RESPONSE_COUNT = 0
 
 
+@dataclass
+class Node:
+    """Small helper structure for nodes identified by an id and text."""
+
+    id: str
+    text: str
+
+
 def _store_response(response: Any) -> None:
     """Persist function call and text data from a response to disk."""
 
@@ -54,6 +62,13 @@ class DAG:
     """Simple in-memory representation of a DAG."""
 
     edges: Dict[str, List[str]] = field(default_factory=dict)
+    contents: Dict[str, str] = field(default_factory=dict)
+
+    def add_content(self, node: Node) -> None:
+        """Store text for a node if not already present."""
+        if node.id not in self.contents:
+            self.contents[node.id] = node.text
+        self.edges.setdefault(node.id, [])
 
     def _has_path(self, start: str, target: str, visited: Optional[set] = None) -> bool:
         """Return True if ``target`` is reachable from ``start``."""
@@ -69,28 +84,36 @@ class DAG:
                 return True
         return False
 
-    def add_edge(self, parent: str, child: str) -> None:
-        if self._has_path(child, parent):
-            raise ValueError(f"Adding edge {parent!r}->{child!r} would create a cycle")
-        self.edges.setdefault(parent, []).append(child)
-        self.edges.setdefault(child, [])
+    def add_edge(self, parent: Node, child: Node) -> None:
+        self.add_content(parent)
+        self.add_content(child)
+        if self._has_path(child.id, parent.id):
+            raise ValueError(
+                f"Adding edge {parent.id!r}->{child.id!r} would create a cycle"
+            )
+        self.edges[parent.id].append(child.id)
 
     def to_nested(self, roots: List[str]) -> List[Dict[str, Any]]:
         """Convert the internal edge mapping to a nested structure.
 
-        Each node is represented as an object with ``content`` and ``children``
-        fields, where ``children`` is a list of nodes in the same format.
+        Each node is represented as an object with ``id``, ``content`` and
+        ``children`` fields, where ``children`` is a list of nodes in the same
+        format.
         """
 
-        def build(node: str, path: Optional[set] = None) -> Dict[str, Any]:
+        def build(node_id: str, path: Optional[set] = None) -> Dict[str, Any]:
             if path is None:
                 path = set()
-            if node in path:
-                raise ValueError(f"Cycle detected at node {node!r}")
+            if node_id in path:
+                raise ValueError(f"Cycle detected at node {node_id!r}")
             children = [
-                build(child, path | {node}) for child in self.edges.get(node, [])
+                build(child, path | {node_id}) for child in self.edges.get(node_id, [])
             ]
-            return {"content": node, "children": children}
+            return {
+                "id": node_id,
+                "content": self.contents.get(node_id, ""),
+                "children": children,
+            }
 
         return [build(root) for root in roots]
 
@@ -103,12 +126,12 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "node": {
+                    "node_id": {
                         "type": "string",
-                        "description": "Node that should not be expanded further",
+                        "description": "ID of the node that should not be expanded further",
                     }
                 },
-                "required": ["node"],
+                "required": ["node_id"],
             },
         },
         {
@@ -117,17 +140,30 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "node": {
+                    "node_id": {
                         "type": "string",
-                        "description": "Parent node being expanded",
+                        "description": "ID of the parent node being expanded",
                     },
                     "children": {
                         "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Names of child nodes",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "description": "Unique ID for the child node",
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Text content of the child node",
+                                },
+                            },
+                            "required": ["id", "text"],
+                        },
+                        "description": "Child nodes to attach",
                     },
                 },
-                "required": ["node", "children"],
+                "required": ["node_id", "children"],
             },
         },
     ]
@@ -138,10 +174,12 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
 
 def make_system_prompt(max_fanout: Optional[int]) -> str:
     prompt = (
-        "You expand nodes in a directed acyclic graph. "
-        "Use the 'stop_expansion' function when no further ideas are needed. "
-        "Use 'new_edges' to suggest new child nodes to explore. "
-        "For each node, call exactly one function: either 'new_edges' or 'stop_expansion'."
+        "You expand nodes in a directed acyclic graph. Each node is identified by an"
+        " 'id' and some 'text'. When responding, reference parent nodes by their"
+        " 'node_id'. For new children, provide both an 'id' and 'text'. Use the"
+        " 'stop_expansion' function when no further ideas are needed. Use 'new_edges'"
+        " to suggest new child nodes to explore. For each node, call exactly one"
+        " function: either 'new_edges' or 'stop_expansion'."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
@@ -151,10 +189,10 @@ def make_system_prompt(max_fanout: Optional[int]) -> str:
 async def expand_layer(
     client: "AsyncOpenAI",
     context: str,
-    nodes: List[str],
+    nodes: List[Node],
     model: str,
     max_fanout: Optional[int] = None,
-) -> Dict[str, List[str]]:
+) -> Dict[str, List[Node]]:
     """Expand all nodes in ``nodes`` using a single batched request.
 
     Args:
@@ -168,7 +206,11 @@ async def expand_layer(
     messages = [
         {"role": "system", "content": make_system_prompt(max_fanout)},
         {"role": "user", "content": context},
-        {"role": "user", "content": "Expand the following nodes:\n" + "\n".join(nodes)},
+        {
+            "role": "user",
+            "content": "Expand the following nodes:\n"
+            + "\n".join(f"{n.id}: {n.text}" for n in nodes),
+        },
     ]
 
     functions = make_functions(max_fanout)
@@ -183,25 +225,31 @@ async def expand_layer(
 
     _store_response(response)
 
-    expansions: Dict[str, List[str]] = {}
+    expansions: Dict[str, List[Node]] = {}
     for item in response.output or []:
         if getattr(item, "type", None) == "function_call":
             name = getattr(item, "name", None)
             arguments = getattr(item, "arguments", "{}")
             payload = json.loads(arguments)
-            node = payload.get("node")
-            if not node:
+            node_id = payload.get("node_id")
+            if not node_id:
                 continue
             if name == "new_edges":
-                expansions[node] = payload.get("children", [])
+                children_payload = payload.get("children", [])
+                children_nodes = [
+                    Node(id=c.get("id"), text=c.get("text", ""))
+                    for c in children_payload
+                    if c.get("id") and c.get("text")
+                ]
+                expansions[node_id] = children_nodes
             elif name == "stop_expansion":
-                expansions[node] = []
+                expansions[node_id] = []
 
     return expansions
 
 
 async def build_dag(
-    seeds: List[str],
+    seeds: List[Node],
     max_nodes: int = 50,
     max_depth: Optional[int] = None,
     max_fanout: Optional[int] = None,
@@ -212,13 +260,15 @@ async def build_dag(
 
     client = AsyncOpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
     dag = DAG()
+    for seed in seeds:
+        dag.add_content(seed)
 
-    queue: List[Tuple[str, int]] = []
+    queue: List[Tuple[Node, int]] = []
     if max_depth is None or max_depth > 0:
         queue = [(seed, 0) for seed in seeds]
 
-    seen = set(seeds)
-    context_lines = ["Seeds:"] + seeds
+    seen = {seed.id for seed in seeds}
+    context_lines = ["Seeds:"] + [f"{seed.id}: {seed.text}" for seed in seeds]
 
     while queue and len(dag.edges) < max_nodes:
         layer = queue[0][1]
@@ -232,19 +282,24 @@ async def build_dag(
             client, "\n".join(context_lines), nodes, model, max_fanout
         )
 
-        new_queue: List[Tuple[str, int]] = []
+        new_queue: List[Tuple[Node, int]] = []
         context_lines.append(f"Layer {layer}:")
         for parent in nodes:
-            children = expansions.get(parent, [])
+            children = expansions.get(parent.id, [])
             if max_fanout is not None:
                 children = children[:max_fanout]
             context_lines.append(
-                f"{parent} -> {', '.join(children) if children else '(none)'}"
+                f"{parent.id}: {parent.text} -> "
+                + (
+                    ", ".join(f"{c.id}: {c.text}" for c in children)
+                    if children
+                    else "(none)"
+                )
             )
             for child in children:
                 dag.add_edge(parent, child)
-                if child not in seen:
-                    seen.add(child)
+                if child.id not in seen:
+                    seen.add(child.id)
                     if max_depth is None or layer + 1 < max_depth:
                         new_queue.append((child, layer + 1))
 
@@ -263,8 +318,14 @@ async def build_dag(
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Generate a DAG using OpenAI function calls")
-    parser.add_argument("seed", nargs="*", help="Seed node(s) to start expansion")
+    parser = argparse.ArgumentParser(
+        description="Generate a DAG using OpenAI function calls"
+    )
+    parser.add_argument(
+        "seed",
+        nargs="*",
+        help="Seed node(s) to start expansion in the form 'ID: text'",
+    )
     parser.add_argument(
         "--seed-file",
         type=argparse.FileType("r"),
@@ -292,12 +353,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    seeds = list(args.seed)
+    def parse_seed(s: str) -> Node:
+        if ":" not in s:
+            parser.error("Seeds must be in the form 'ID: text'")
+        node_id, text = s.split(":", 1)
+        return Node(node_id.strip(), text.strip())
+
+    seeds = [parse_seed(s) for s in args.seed]
     if args.seed_file:
         with args.seed_file as f:
             content = f.read().strip()
             if content:
-                seeds.append(content)
+                seeds.append(parse_seed(content))
 
     if not seeds:
         parser.error("No seeds provided. Specify positional seeds or use --seed-file.")
@@ -311,7 +378,7 @@ def main() -> None:
             args.model,
         )
     )
-    nested = dag.to_nested(seeds)
+    nested = dag.to_nested([s.id for s in seeds])
     print(json.dumps(nested, indent=2))
 
 
