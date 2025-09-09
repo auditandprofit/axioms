@@ -179,7 +179,9 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
     return functions
 
 
-def make_system_prompt(max_fanout: Optional[int]) -> str:
+def make_system_prompt(
+    max_fanout: Optional[int], append: Optional[str] = None
+) -> str:
     prompt = (
         "You expand nodes in a directed acyclic graph. Each node has a numeric"
         " 'id' and some 'text'. When responding, reference parent nodes by their"
@@ -191,6 +193,8 @@ def make_system_prompt(max_fanout: Optional[int]) -> str:
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
+    if append:
+        prompt += "\n" + append.strip()
     return prompt
 
 
@@ -200,6 +204,7 @@ async def expand_layer(
     nodes: List[Node],
     model: str,
     max_fanout: Optional[int] = None,
+    system_prompt_append: Optional[str] = None,
 ) -> Dict[str, List[Node]]:
     """Expand all nodes in ``nodes`` using a single batched request.
 
@@ -209,10 +214,14 @@ async def expand_layer(
         nodes: Nodes to expand.
         model: Name of the OpenAI model to use.
         max_fanout: Maximum number of children the model may return per node.
+        system_prompt_append: Additional text appended to the system prompt.
     """
 
     messages = [
-        {"role": "system", "content": make_system_prompt(max_fanout)},
+        {
+            "role": "system",
+            "content": make_system_prompt(max_fanout, system_prompt_append),
+        },
         {"role": "user", "content": context},
         {
             "role": "user",
@@ -262,6 +271,7 @@ async def build_dag(
     max_depth: Optional[int] = None,
     max_fanout: Optional[int] = None,
     model: str = "gpt-4o-mini",
+    system_prompt_append: Optional[str] = None,
 ) -> DAG:
     if AsyncOpenAI is None:
         raise RuntimeError("openai package is required to run this script")
@@ -287,7 +297,12 @@ async def build_dag(
         )
 
         expansions = await expand_layer(
-            client, "\n".join(context_lines), nodes, model, max_fanout
+            client,
+            "\n".join(context_lines),
+            nodes,
+            model,
+            max_fanout,
+            system_prompt_append,
         )
 
         new_queue: List[Tuple[Node, int]] = []
@@ -364,6 +379,11 @@ def main() -> None:
         default="gpt-4o-mini",
         help="OpenAI model to use",
     )
+    parser.add_argument(
+        "--sys-prompt-file",
+        type=argparse.FileType("r"),
+        help="File whose contents are appended to the system prompt",
+    )
     args = parser.parse_args()
 
     def parse_seed(s: str) -> Node:
@@ -385,6 +405,11 @@ def main() -> None:
             "No seeds provided. Specify positional seeds or use --seed-file or --seed-stdin."
         )
 
+    sys_prompt_append = None
+    if args.sys_prompt_file:
+        with args.sys_prompt_file as f:
+            sys_prompt_append = f.read()
+
     dag = asyncio.run(
         build_dag(
             seeds,
@@ -392,6 +417,7 @@ def main() -> None:
             args.max_depth,
             args.max_fanout,
             args.model,
+            sys_prompt_append,
         )
     )
     nested = dag.to_nested([s.id for s in seeds])
