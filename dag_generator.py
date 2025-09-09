@@ -3,12 +3,50 @@ import json
 import os
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from openai import AsyncOpenAI
 except ImportError:
     AsyncOpenAI = None
+
+
+_LOG_DIR: Optional[Path] = None
+_RESPONSE_COUNT = 0
+
+
+def _store_response(response: Any) -> None:
+    """Persist function call and text data from a response to disk."""
+
+    global _LOG_DIR, _RESPONSE_COUNT
+    if _LOG_DIR is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        _LOG_DIR = Path("openai_outputs") / timestamp
+        _LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+    _RESPONSE_COUNT += 1
+    data: Dict[str, Any] = {
+        "text": getattr(response, "output_text", None),
+        "function_calls": [],
+    }
+
+    for item in getattr(response, "output", []) or []:
+        if getattr(item, "type", None) == "function_call":
+            data["function_calls"].append(
+                {
+                    "name": getattr(item, "name", None),
+                    "arguments": getattr(item, "arguments", None),
+                }
+            )
+
+    path = _LOG_DIR / f"response_{_RESPONSE_COUNT:03d}.json"
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -142,6 +180,8 @@ async def expand_layer(
         tool_choice="auto",
         parallel_tool_calls=False,
     )
+
+    _store_response(response)
 
     expansions: Dict[str, List[str]] = {}
     for item in response.output or []:
