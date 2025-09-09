@@ -6,13 +6,14 @@ OpenAI's function calling API.
 ## Usage
 
 ```bash
-python dag_generator.py "ROOT: root node"
+python dag_generator.py "root node"
 ```
 
-Each seed must include a unique identifier followed by a colon and the node
-text (e.g. `ROOT: root node`). The script also accepts a seed prompt from a
-file using the `--seed-file` flag. The entire contents of the file are treated
-as a single seed node:
+Each positional argument is treated as the text for a seed node. The script
+assigns simple numeric identifiers starting at `0` so you no longer need to
+specify an ID. You can also provide a seed prompt from a file using the
+`--seed-file` flag. The entire contents of the file are treated as a single seed
+node:
 
 ```bash
 python dag_generator.py --seed-file seeds.txt

@@ -16,6 +16,17 @@ except ImportError:
 _LOG_DIR: Optional[Path] = None
 _RESPONSE_COUNT = 0
 
+# Counter used to assign simple numeric IDs to nodes
+_NODE_COUNTER = 0
+
+
+def _next_id() -> str:
+    """Return a new sequential node id as a string."""
+    global _NODE_COUNTER
+    node_id = str(_NODE_COUNTER)
+    _NODE_COUNTER += 1
+    return node_id
+
 
 @dataclass
 class Node:
@@ -149,16 +160,12 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Unique ID for the child node",
-                                },
                                 "text": {
                                     "type": "string",
                                     "description": "Text content of the child node",
                                 },
                             },
-                            "required": ["id", "text"],
+                            "required": ["text"],
                         },
                         "description": "Child nodes to attach",
                     },
@@ -174,12 +181,13 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
 
 def make_system_prompt(max_fanout: Optional[int]) -> str:
     prompt = (
-        "You expand nodes in a directed acyclic graph. Each node is identified by an"
+        "You expand nodes in a directed acyclic graph. Each node has a numeric"
         " 'id' and some 'text'. When responding, reference parent nodes by their"
-        " 'node_id'. For new children, provide both an 'id' and 'text'. Use the"
-        " 'stop_expansion' function when no further ideas are needed. Use 'new_edges'"
-        " to suggest new child nodes to explore. For each node, call exactly one"
-        " function: either 'new_edges' or 'stop_expansion'."
+        " 'node_id'. For new children, provide only the 'text'; IDs will be"
+        " assigned automatically. Use the 'stop_expansion' function when no"
+        " further ideas are needed. Use 'new_edges' to suggest new child nodes to"
+        " explore. For each node, call exactly one function: either 'new_edges' or"
+        " 'stop_expansion'."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
@@ -236,11 +244,11 @@ async def expand_layer(
                 continue
             if name == "new_edges":
                 children_payload = payload.get("children", [])
-                children_nodes = [
-                    Node(id=c.get("id"), text=c.get("text", ""))
-                    for c in children_payload
-                    if c.get("id") and c.get("text")
-                ]
+                children_nodes: List[Node] = []
+                for c in children_payload:
+                    text = c.get("text")
+                    if text:
+                        children_nodes.append(Node(id=_next_id(), text=text))
                 expansions[node_id] = children_nodes
             elif name == "stop_expansion":
                 expansions[node_id] = []
@@ -324,7 +332,7 @@ def main() -> None:
     parser.add_argument(
         "seed",
         nargs="*",
-        help="Seed node(s) to start expansion in the form 'ID: text'",
+        help="Seed node text(s) to start expansion",
     )
     parser.add_argument(
         "--seed-file",
@@ -354,10 +362,7 @@ def main() -> None:
     args = parser.parse_args()
 
     def parse_seed(s: str) -> Node:
-        if ":" not in s:
-            parser.error("Seeds must be in the form 'ID: text'")
-        node_id, text = s.split(":", 1)
-        return Node(node_id.strip(), text.strip())
+        return Node(_next_id(), s.strip())
 
     seeds = [parse_seed(s) for s in args.seed]
     if args.seed_file:
