@@ -24,6 +24,7 @@ python dag_generator.py "root node" --max-depth 3 --max-fanout 2
 
 * `--max-depth` limits how deep the expansion proceeds (0 disables expansion).
 * `--max-fanout` restricts the number of children added per node.
+* `--model` selects the OpenAI model to use (default `gpt-4o-mini`).
 
 During execution the script prints a live status to stderr showing the
 current layer being expanded and the number of nodes remaining in that
