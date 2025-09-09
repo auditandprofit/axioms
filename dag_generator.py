@@ -114,6 +114,7 @@ async def expand_layer(
     client: "AsyncOpenAI",
     context: str,
     nodes: List[str],
+    model: str,
     max_fanout: Optional[int] = None,
 ) -> Dict[str, List[str]]:
     """Expand all nodes in ``nodes`` using a single batched request.
@@ -122,6 +123,7 @@ async def expand_layer(
         client: OpenAI client used to make the request.
         context: Conversation context so far.
         nodes: Nodes to expand.
+        model: Name of the OpenAI model to use.
         max_fanout: Maximum number of children the model may return per node.
     """
 
@@ -134,7 +136,7 @@ async def expand_layer(
     functions = make_functions(max_fanout)
 
     response = await client.responses.create(
-        model="gpt-4o-mini",
+        model=model,
         input=messages,
         tools=[{**f, "type": "function"} for f in functions],
         tool_choice="auto",
@@ -163,6 +165,7 @@ async def build_dag(
     max_nodes: int = 50,
     max_depth: Optional[int] = None,
     max_fanout: Optional[int] = None,
+    model: str = "gpt-4o-mini",
 ) -> DAG:
     if AsyncOpenAI is None:
         raise RuntimeError("openai package is required to run this script")
@@ -186,7 +189,7 @@ async def build_dag(
         )
 
         expansions = await expand_layer(
-            client, "\n".join(context_lines), nodes, max_fanout
+            client, "\n".join(context_lines), nodes, model, max_fanout
         )
 
         new_queue: List[Tuple[str, int]] = []
@@ -242,6 +245,11 @@ def main() -> None:
         default=None,
         help="Maximum number of children per node",
     )
+    parser.add_argument(
+        "--model",
+        default="gpt-4o-mini",
+        help="OpenAI model to use",
+    )
     args = parser.parse_args()
 
     seeds = list(args.seed)
@@ -260,6 +268,7 @@ def main() -> None:
             args.max_nodes,
             args.max_depth,
             args.max_fanout,
+            args.model,
         )
     )
     nested = dag.to_nested(seeds)
