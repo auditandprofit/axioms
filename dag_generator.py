@@ -340,6 +340,11 @@ def main() -> None:
         help="Path to a file whose entire contents form a single seed node",
     )
     parser.add_argument(
+        "--seed-stdin",
+        action="store_true",
+        help="Read a seed from standard input",
+    )
+    parser.add_argument(
         "--max-nodes", type=int, default=50, help="Maximum number of nodes to generate"
     )
     parser.add_argument(
@@ -370,9 +375,15 @@ def main() -> None:
             content = f.read().strip()
             if content:
                 seeds.append(parse_seed(content))
+    if args.seed_stdin:
+        content = sys.stdin.read().strip()
+        if content:
+            seeds.append(parse_seed(content))
 
     if not seeds:
-        parser.error("No seeds provided. Specify positional seeds or use --seed-file.")
+        parser.error(
+            "No seeds provided. Specify positional seeds or use --seed-file or --seed-stdin."
+        )
 
     dag = asyncio.run(
         build_dag(

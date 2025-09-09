@@ -19,6 +19,12 @@ node:
 python dag_generator.py --seed-file seeds.txt
 ```
 
+Alternatively, pass the seed via standard input using the `--seed-stdin` flag:
+
+```bash
+echo "root node" | python dag_generator.py --seed-stdin
+```
+
 You can further control the graph generation using additional flags:
 
 ```bash
