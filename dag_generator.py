@@ -16,16 +16,16 @@ except ImportError:
 _LOG_DIR: Optional[Path] = None
 _RESPONSE_COUNT = 0
 
-# Counter used to assign simple numeric IDs to nodes
+# Counter used to assign sequential IDs to nodes
 _NODE_COUNTER = 0
 
 
 def _next_id() -> str:
-    """Return a new sequential node id as a string."""
+    """Return a new sequential node id prefixed with ``axiom_node_id-``."""
     global _NODE_COUNTER
-    node_id = str(_NODE_COUNTER)
+    node_id = _NODE_COUNTER
     _NODE_COUNTER += 1
-    return node_id
+    return f"axiom_node_id-{node_id}"
 
 
 @dataclass
@@ -183,13 +183,13 @@ def make_system_prompt(
     max_fanout: Optional[int], append: Optional[str] = None
 ) -> str:
     prompt = (
-        "You expand nodes in a directed acyclic graph. Each node has a numeric"
-        " 'id' and some 'text'. When responding, reference parent nodes by their"
-        " 'node_id'. For new children, provide only the 'text'; IDs will be"
-        " assigned automatically. Use the 'stop_expansion' function when no"
-        " further ideas are needed. Use 'new_edges' to suggest new child nodes to"
-        " explore. For each node, call exactly one function: either 'new_edges' or"
-        " 'stop_expansion'."
+        "You expand nodes in a directed acyclic graph. Each node has an 'id' in the"
+        " form 'axiom_node_id-<number>' and some 'text'. When responding, reference"
+        " parent nodes by their 'node_id'. For new children, provide only the"
+        " 'text'; IDs will be assigned automatically. Use the 'stop_expansion'"
+        " function when no further ideas are needed. Use 'new_edges' to suggest new"
+        " child nodes to explore. For each node, call exactly one function: either"
+        " 'new_edges' or 'stop_expansion'."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
