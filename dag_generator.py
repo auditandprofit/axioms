@@ -221,14 +221,17 @@ async def expand_layer(
         {
             "role": "system",
             "content": make_system_prompt(max_fanout, system_prompt_append),
-        },
-        {"role": "user", "content": context},
+        }
+    ]
+    if context:
+        messages.append({"role": "user", "content": context})
+    messages.append(
         {
             "role": "user",
             "content": "Expand the following nodes:\n"
             + "\n".join(f"{n.id}: {n.text}" for n in nodes),
-        },
-    ]
+        }
+    )
 
     functions = make_functions(max_fanout)
 
@@ -287,7 +290,7 @@ async def build_dag(
         queue = [(seed, 0) for seed in seeds]
 
     seen = {seed.id for seed in seeds}
-    context_lines = ["Seeds:"] + [f"{seed.id}: {seed.text}" for seed in seeds]
+    context_lines: List[str] = []
 
     while queue and len(dag.edges) < max_nodes:
         layer = queue[0][1]
