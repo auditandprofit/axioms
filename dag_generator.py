@@ -147,35 +147,45 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
         },
         {
             "name": "new_edges",
-            "description": "Return a list of child nodes to attach to the given node.",
+            "description": "Return new child nodes for one or more parent nodes.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": "ID of the parent node being expanded",
-                    },
-                    "children": {
+                    "expansions": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "text": {
+                                "node_id": {
                                     "type": "string",
-                                    "description": "Text content of the child node",
+                                    "description": "ID of the parent node being expanded",
+                                },
+                                "children": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "text": {
+                                                "type": "string",
+                                                "description": "Text content of the child node",
+                                            }
+                                        },
+                                        "required": ["text"],
+                                    },
+                                    "description": "Child nodes to attach",
                                 },
                             },
-                            "required": ["text"],
+                            "required": ["node_id", "children"],
                         },
-                        "description": "Child nodes to attach",
+                        "description": "List of parent nodes and their proposed children",
                     },
                 },
-                "required": ["node_id", "children"],
+                "required": ["expansions"],
             },
         },
     ]
     if max_fanout is not None:
-        functions[1]["parameters"]["properties"]["children"]["maxItems"] = max_fanout
+        functions[1]["parameters"]["properties"]["expansions"]["items"]["properties"]["children"]["maxItems"] = max_fanout
     return functions
 
 
@@ -183,12 +193,14 @@ def make_system_prompt(
     max_fanout: Optional[int], append: Optional[str] = None
 ) -> str:
     prompt = (
-        "You expand nodes in a directed acyclic graph. Each node has an 'id' in the"
-        " form 'axiom_node_id-<number>' and some 'text'. When responding, reference"
-        " parent nodes by their 'axiom_node_id-<number>'. For new children, provide the axiom_node_id to expand on and the text" 
-	"Use the 'stop_expansion'"
-        " function when no further ideas are needed. Use 'new_edges' to create new"
-        " child nodes. Either call stop_expansion or new_edges exactly once. Pass an array of objects into new_edges to expand many parent nodes."
+        "You expand nodes in a directed acyclic graph. Each node has an 'id' in the "
+        "form 'axiom_node_id-<number>' and some 'text'. When responding, reference "
+        "parent nodes by their 'axiom_node_id-<number>'. "
+        "Use the 'stop_expansion' function when no further ideas are needed. "
+        "Use 'new_edges' to create new child nodes. Either call stop_expansion or "
+        "new_edges exactly once. When calling new_edges, supply an array under "
+        "'expansions'; each element should contain a 'node_id' and a 'children' "
+        "array of objects with 'text'."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
@@ -250,19 +262,27 @@ async def expand_layer(
             name = getattr(item, "name", None)
             arguments = getattr(item, "arguments", "{}")
             payload = json.loads(arguments)
-            node_id = payload.get("node_id")
-            if not node_id:
-                continue
             if name == "new_edges":
-                children_payload = payload.get("children", [])
-                children_nodes: List[Node] = []
-                for c in children_payload:
-                    text = c.get("text")
-                    if text:
-                        children_nodes.append(Node(id=_next_id(), text=text))
-                expansions[node_id] = children_nodes
+                exp_payload = payload.get("expansions")
+                if exp_payload is None and payload.get("node_id") is not None:
+                    # Backward compatibility for single expansion objects
+                    exp_payload = [payload]
+                if not exp_payload:
+                    continue
+                for exp in exp_payload:
+                    node_id = exp.get("node_id")
+                    if not node_id:
+                        continue
+                    children_nodes: List[Node] = []
+                    for c in exp.get("children", []):
+                        text = c.get("text")
+                        if text:
+                            children_nodes.append(Node(id=_next_id(), text=text))
+                    expansions[node_id] = children_nodes
             elif name == "stop_expansion":
-                expansions[node_id] = []
+                node_id = payload.get("node_id")
+                if node_id:
+                    expansions[node_id] = []
 
     return expansions
 
