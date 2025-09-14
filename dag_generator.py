@@ -216,6 +216,8 @@ async def expand_layer(
     model: str,
     max_fanout: Optional[int] = None,
     system_prompt_append: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    service_tier: Optional[str] = None,
 ) -> Dict[str, List[Node]]:
     """Expand all nodes in ``nodes`` using a single batched request.
 
@@ -246,13 +248,19 @@ async def expand_layer(
 
     functions = make_functions(max_fanout)
 
-    response = await client.responses.create(
-        model=model,
-        input=messages,
-        tools=[{**f, "type": "function"} for f in functions],
-        tool_choice="auto",
-        parallel_tool_calls=False,
-    )
+    request_kwargs: Dict[str, Any] = {
+        "model": model,
+        "input": messages,
+        "tools": [{**f, "type": "function"} for f in functions],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+    }
+    if reasoning_effort:
+        request_kwargs["reasoning"] = {"effort": reasoning_effort}
+    if service_tier:
+        request_kwargs["service_tier"] = service_tier
+
+    response = await client.responses.create(**request_kwargs)
 
     _store_response(response)
 
@@ -295,6 +303,8 @@ async def build_dag(
     initial_fanout: Optional[int] = None,
     model: str = "gpt-4o-mini",
     system_prompt_append: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    service_tier: Optional[str] = None,
 ) -> DAG:
     if AsyncOpenAI is None:
         raise RuntimeError("openai package is required to run this script")
@@ -329,6 +339,8 @@ async def build_dag(
             model,
             current_fanout,
             system_prompt_append,
+            reasoning_effort,
+            service_tier,
         )
 
         new_queue: List[Tuple[Node, int]] = []
@@ -416,6 +428,14 @@ def main() -> None:
         type=argparse.FileType("r"),
         help="File whose contents are appended to the system prompt",
     )
+    parser.add_argument(
+        "--reasoning-effort",
+        help="Value for the reasoning effort passed to the OpenAI API",
+    )
+    parser.add_argument(
+        "--service-tier",
+        help="Service tier value forwarded to the OpenAI API",
+    )
     args = parser.parse_args()
 
     def parse_seed(s: str) -> Node:
@@ -451,6 +471,8 @@ def main() -> None:
             args.initial_fanout,
             args.model,
             sys_prompt_append,
+            args.reasoning_effort,
+            args.service_tier,
         )
     )
     nested = dag.to_nested([s.id for s in seeds])

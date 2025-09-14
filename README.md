@@ -36,6 +36,8 @@ python dag_generator.py "root node" --max-depth 3 --max-fanout 2
 * `--initial-fanout` caps the number of children added for the seed layer only.
 * `--model` selects the OpenAI model to use (default `gpt-4o-mini`).
 * `--sys-prompt-file` appends the contents of a file to the system prompt.
+* `--reasoning-effort` forwards a reasoning effort value to the OpenAI API.
+* `--service-tier` sets the service tier used for API requests.
 
 To append custom instructions to the system prompt:
 
