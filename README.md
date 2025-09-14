@@ -33,6 +33,7 @@ python dag_generator.py "root node" --max-depth 3 --max-fanout 2
 
 * `--max-depth` limits how deep the expansion proceeds (0 disables expansion).
 * `--max-fanout` restricts the number of children added per node.
+* `--initial-fanout` caps the number of children added for the seed layer only.
 * `--model` selects the OpenAI model to use (default `gpt-4o-mini`).
 * `--sys-prompt-file` appends the contents of a file to the system prompt.
 
