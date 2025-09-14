@@ -185,11 +185,10 @@ def make_system_prompt(
     prompt = (
         "You expand nodes in a directed acyclic graph. Each node has an 'id' in the"
         " form 'axiom_node_id-<number>' and some 'text'. When responding, reference"
-        " parent nodes by their 'node_id'. For new children, provide only the"
-        " 'text'; IDs will be assigned automatically. Use the 'stop_expansion'"
-        " function when no further ideas are needed. Use 'new_edges' to suggest new"
-        " child nodes to explore. For each node, call exactly one function: either"
-        " 'new_edges' or 'stop_expansion'."
+        " parent nodes by their 'axiom_node_id-<number>'. For new children, provide the axiom_node_id to expand on and the text" 
+	"Use the 'stop_expansion'"
+        " function when no further ideas are needed. Use 'new_edges' to create new"
+        " child nodes. Either call stop_expansion or new_edges exactly once. Pass an array of objects into new_edges to expand many parent nodes."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
