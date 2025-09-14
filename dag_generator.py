@@ -270,6 +270,7 @@ async def build_dag(
     max_nodes: int = 50,
     max_depth: Optional[int] = None,
     max_fanout: Optional[int] = None,
+    initial_fanout: Optional[int] = None,
     model: str = "gpt-4o-mini",
     system_prompt_append: Optional[str] = None,
 ) -> DAG:
@@ -296,12 +297,15 @@ async def build_dag(
             file=sys.stderr,
         )
 
+        current_fanout = (
+            initial_fanout if layer == 0 and initial_fanout is not None else max_fanout
+        )
         expansions = await expand_layer(
             client,
             "\n".join(context_lines),
             nodes,
             model,
-            max_fanout,
+            current_fanout,
             system_prompt_append,
         )
 
@@ -309,8 +313,8 @@ async def build_dag(
         context_lines.append(f"Layer {layer}:")
         for parent in nodes:
             children = expansions.get(parent.id, [])
-            if max_fanout is not None:
-                children = children[:max_fanout]
+            if current_fanout is not None:
+                children = children[:current_fanout]
             context_lines.append(
                 f"{parent.id}: {parent.text} -> "
                 + (
@@ -375,6 +379,12 @@ def main() -> None:
         help="Maximum number of children per node",
     )
     parser.add_argument(
+        "--initial-fanout",
+        type=int,
+        default=None,
+        help="Maximum number of children for the seed layer",
+    )
+    parser.add_argument(
         "--model",
         default="gpt-4o-mini",
         help="OpenAI model to use",
@@ -416,6 +426,7 @@ def main() -> None:
             args.max_nodes,
             args.max_depth,
             args.max_fanout,
+            args.initial_fanout,
             args.model,
             sys_prompt_append,
         )
