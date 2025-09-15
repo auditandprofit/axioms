@@ -36,14 +36,23 @@ class Node:
     text: str
 
 
-def _store_response(response: Any) -> None:
-    """Persist function call and text data from a response to disk."""
+def _ensure_log_dir() -> Path:
+    """Return the directory used to persist request/response data."""
 
-    global _LOG_DIR, _RESPONSE_COUNT
+    global _LOG_DIR
     if _LOG_DIR is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         _LOG_DIR = Path("openai_outputs") / timestamp
         _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    return _LOG_DIR
+
+
+def _store_response(response: Any) -> None:
+    """Persist function call and text data from a response to disk."""
+
+    global _RESPONSE_COUNT
+
+    log_dir = _ensure_log_dir()
 
     _RESPONSE_COUNT += 1
     data: Dict[str, Any] = {
@@ -60,10 +69,26 @@ def _store_response(response: Any) -> None:
                 }
             )
 
-    path = _LOG_DIR / f"response_{_RESPONSE_COUNT:03d}.json"
+    path = log_dir / f"response_{_RESPONSE_COUNT:03d}.json"
     try:
         with path.open("w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
+    except Exception:
+        pass
+
+
+def _store_final_tree(tree: Any) -> None:
+    """Persist the final nested tree representation to disk."""
+
+    try:
+        log_dir = _ensure_log_dir()
+    except Exception:
+        return
+
+    path = log_dir / "final_tree.json"
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(tree, fh, indent=2)
     except Exception:
         pass
 
@@ -476,6 +501,7 @@ def main() -> None:
         )
     )
     nested = dag.to_nested([s.id for s in seeds])
+    _store_final_tree(nested)
     print(json.dumps(nested, indent=2))
 
 
