@@ -47,4 +47,6 @@ python dag_generator.py "root node" --sys-prompt-file extra_prompt.txt
 
 During execution the script prints a live status to stderr showing the
 current layer being expanded and the number of nodes remaining in that
-layer.
+layer. The final tree is written to standard output *and* persisted to
+`openai_outputs/<timestamp>/final_tree.json` alongside the raw response
+logs for later inspection.
