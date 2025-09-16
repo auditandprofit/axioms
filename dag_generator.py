@@ -246,12 +246,17 @@ def make_system_prompt(
     prompt = (
         "You expand nodes in a directed acyclic graph. Each node has an 'id' in the "
         "form 'axiom_node_id-<number>' and some 'text'. When responding, reference "
-        "parent nodes by their 'axiom_node_id-<number>'. "
-        "Use the 'stop_expansion' function when no further ideas are needed. "
-        "Use 'new_edges' to create new child nodes. Either call stop_expansion or "
-        "new_edges exactly once. When calling new_edges, supply an array under "
-        "'expansions'; each element should contain a 'node_id' and a 'children' "
-        "array of objects with 'text'."
+        "parent nodes by their 'axiom_node_id-<number>'. Process every node listed "
+        "in the most recent user message describing the current layer. For each "
+        "node: if it needs more ideas, call 'new_edges' and include that node in the "
+        "'expansions' array with a 'children' array of objects containing only a "
+        "'text' field for each child (IDs are assigned automatically). If the node "
+        "should not receive more children, call 'stop_expansion' with that node's "
+        "ID. You may call the tools multiple times, but by the end of your response "
+        "every node from the current layer must have been handled exactly once—"
+        "either via 'new_edges' or 'stop_expansion'—and you must not invoke both "
+        "tools for the same node. When creating children, obey any stated limits on "
+        "the number of children per parent."
     )
     if max_fanout is not None:
         prompt += f" Do not propose more than {max_fanout} child nodes per parent."
