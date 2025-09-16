@@ -1,11 +1,13 @@
 import asyncio
+import copy
 import json
 import os
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional
 
 try:
     from openai import AsyncOpenAI
@@ -34,6 +36,15 @@ class Node:
 
     id: str
     text: str
+
+
+@dataclass
+class FlowContext:
+    """Represents the state required to continue expanding a single path."""
+
+    node: Node
+    depth: int
+    history: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def _layer_to_payload(
@@ -376,36 +387,39 @@ async def build_dag(
     for seed in seeds:
         dag.add_content(seed)
 
-    queue: List[Tuple[Node, int]] = []
-    if max_depth is None or max_depth > 0:
-        queue = [(seed, 0) for seed in seeds]
-
     seen = {seed.id for seed in seeds}
-    layer_nodes: Dict[int, List[Node]] = {0: list(seeds)}
     node_parents: Dict[str, str] = {}
 
-    while queue and len(dag.edges) < max_nodes:
-        layer = queue[0][1]
-        nodes = [node for node, _ in queue]
+    flows: Deque[FlowContext] = deque()
+    if max_depth is None or max_depth > 0:
+        for seed in seeds:
+            flows.append(FlowContext(node=seed, depth=0))
+
+    while flows and len(dag.edges) < max_nodes:
+        context = flows.popleft()
+
+        if max_depth is not None and context.depth >= max_depth:
+            continue
+
+        base_payload = _layer_to_payload(context.depth, [context.node], node_parents)
+        request_payload = copy.deepcopy(base_payload)
+        request_payload["action"] = "expand"
+
         print(
-            f"Layer {layer}: expanding {len(nodes)} node(s)",
+            f"Depth {context.depth}: expanding path ending at {context.node.id}",
             file=sys.stderr,
         )
 
         current_fanout = (
-            initial_fanout if layer == 0 and initial_fanout is not None else max_fanout
+            initial_fanout
+            if context.depth == 0 and initial_fanout is not None
+            else max_fanout
         )
-        history_payloads = [
-            _layer_to_payload(idx, layer_nodes[idx], node_parents)
-            for idx in sorted(layer_nodes.keys())
-            if idx < layer
-        ]
-        current_payload = _layer_to_payload(layer, nodes, node_parents)
-        current_payload["action"] = "expand"
+
         expansions = await expand_layer(
             client,
-            history_payloads,
-            current_payload,
+            context.history,
+            request_payload,
             model,
             current_fanout,
             system_prompt_append,
@@ -413,28 +427,36 @@ async def build_dag(
             service_tier,
         )
 
-        new_queue: List[Tuple[Node, int]] = []
-        for parent in nodes:
-            children = expansions.get(parent.id, [])
-            if current_fanout is not None:
-                children = children[:current_fanout]
-            for child in children:
-                dag.add_edge(parent, child)
-                if child.id not in seen:
-                    seen.add(child.id)
-                    node_parents[child.id] = parent.id
-                    layer_nodes.setdefault(layer + 1, []).append(child)
-                    if max_depth is None or layer + 1 < max_depth:
-                        new_queue.append((child, layer + 1))
+        history_for_children = context.history + [copy.deepcopy(base_payload)]
 
-        if new_queue:
-            next_layer = new_queue[0][1]
-            print(
-                f"Layer {next_layer} discovered with {len(new_queue)} node(s)",
-                file=sys.stderr,
-            )
+        children = expansions.get(context.node.id, [])
+        if current_fanout is not None:
+            children = children[:current_fanout]
 
-        queue = new_queue
+        if not children:
+            continue
+
+        next_depth = context.depth + 1
+        print(
+            f"Queued {len(children)} flow(s) at depth {next_depth} from {context.node.id}",
+            file=sys.stderr,
+        )
+
+        for child in children:
+            if len(dag.edges) >= max_nodes:
+                break
+            dag.add_edge(context.node, child)
+            if child.id not in seen:
+                seen.add(child.id)
+                node_parents[child.id] = context.node.id
+                if max_depth is None or next_depth < max_depth:
+                    flows.append(
+                        FlowContext(
+                            node=child,
+                            depth=next_depth,
+                            history=list(history_for_children),
+                        )
+                    )
 
     return dag
 
