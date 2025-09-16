@@ -36,6 +36,32 @@ class Node:
     text: str
 
 
+def _layer_to_payload(
+    layer_index: int,
+    nodes: List[Node],
+    parent_lookup: Dict[str, str],
+) -> Dict[str, Any]:
+    """Return a JSON-serialisable structure describing a layer of nodes."""
+
+    payload: Dict[str, Any] = {
+        "layer_index": layer_index,
+        "nodes": [],
+    }
+
+    for node in nodes:
+        node_entry: Dict[str, Any] = {
+            "id": node.id,
+            "text": node.text,
+        }
+        if layer_index > 0:
+            parent_id = parent_lookup.get(node.id)
+            if parent_id is not None:
+                node_entry["parent_id"] = parent_id
+        payload["nodes"].append(node_entry)
+
+    return payload
+
+
 def _ensure_log_dir() -> Path:
     """Return the directory used to persist request/response data."""
 
@@ -236,20 +262,20 @@ def make_system_prompt(
 
 async def expand_layer(
     client: "AsyncOpenAI",
-    context: str,
-    nodes: List[Node],
+    history_layers: List[Dict[str, Any]],
+    current_layer_payload: Dict[str, Any],
     model: str,
     max_fanout: Optional[int] = None,
     system_prompt_append: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     service_tier: Optional[str] = None,
 ) -> Dict[str, List[Node]]:
-    """Expand all nodes in ``nodes`` using a single batched request.
+    """Expand the nodes described by ``current_layer_payload`` in one request.
 
     Args:
         client: OpenAI client used to make the request.
-        context: Conversation context so far.
-        nodes: Nodes to expand.
+        history_layers: Previously generated layers to replay to the model.
+        current_layer_payload: Description of the layer currently being expanded.
         model: Name of the OpenAI model to use.
         max_fanout: Maximum number of children the model may return per node.
         system_prompt_append: Additional text appended to the system prompt.
@@ -261,13 +287,19 @@ async def expand_layer(
             "content": make_system_prompt(max_fanout, system_prompt_append),
         }
     ]
-    if context:
-        messages.append({"role": "user", "content": context})
+    for layer_payload in history_layers:
+        messages.append(
+            {
+                "role": "user",
+                "content": json.dumps(layer_payload, indent=2, ensure_ascii=False),
+            }
+        )
     messages.append(
         {
             "role": "user",
-            "content": "Expand the following nodes:\n"
-            + "\n".join(f"{n.id}: {n.text}" for n in nodes),
+            "content": json.dumps(
+                current_layer_payload, indent=2, ensure_ascii=False
+            ),
         }
     )
 
@@ -344,7 +376,8 @@ async def build_dag(
         queue = [(seed, 0) for seed in seeds]
 
     seen = {seed.id for seed in seeds}
-    context_lines: List[str] = []
+    layer_nodes: Dict[int, List[Node]] = {0: list(seeds)}
+    node_parents: Dict[str, str] = {}
 
     while queue and len(dag.edges) < max_nodes:
         layer = queue[0][1]
@@ -357,10 +390,17 @@ async def build_dag(
         current_fanout = (
             initial_fanout if layer == 0 and initial_fanout is not None else max_fanout
         )
+        history_payloads = [
+            _layer_to_payload(idx, layer_nodes[idx], node_parents)
+            for idx in sorted(layer_nodes.keys())
+            if idx < layer
+        ]
+        current_payload = _layer_to_payload(layer, nodes, node_parents)
+        current_payload["action"] = "expand"
         expansions = await expand_layer(
             client,
-            "\n".join(context_lines),
-            nodes,
+            history_payloads,
+            current_payload,
             model,
             current_fanout,
             system_prompt_append,
@@ -369,23 +409,16 @@ async def build_dag(
         )
 
         new_queue: List[Tuple[Node, int]] = []
-        context_lines.append(f"Layer {layer}:")
         for parent in nodes:
             children = expansions.get(parent.id, [])
             if current_fanout is not None:
                 children = children[:current_fanout]
-            context_lines.append(
-                f"{parent.id}: {parent.text} -> "
-                + (
-                    ", ".join(f"{c.id}: {c.text}" for c in children)
-                    if children
-                    else "(none)"
-                )
-            )
             for child in children:
                 dag.add_edge(parent, child)
                 if child.id not in seen:
                     seen.add(child.id)
+                    node_parents[child.id] = parent.id
+                    layer_nodes.setdefault(layer + 1, []).append(child)
                     if max_depth is None or layer + 1 < max_depth:
                         new_queue.append((child, layer + 1))
 
