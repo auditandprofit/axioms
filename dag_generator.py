@@ -2,6 +2,7 @@ import asyncio
 import copy
 import json
 import os
+import random
 import sys
 from collections import deque
 from dataclasses import dataclass, field
@@ -10,9 +11,42 @@ from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
 try:
-    from openai import AsyncOpenAI
+    from openai import (
+        APIConnectionError,
+        APIError,
+        APIStatusError,
+        APITimeoutError,
+        AsyncOpenAI,
+        OpenAIError,
+        RateLimitError,
+    )
 except ImportError:
     AsyncOpenAI = None
+
+    class _OpenAIErrorFallback(Exception):
+        """Fallback error base when the OpenAI package is unavailable."""
+
+    class _APIErrorFallback(_OpenAIErrorFallback):
+        pass
+
+    class _APIStatusErrorFallback(_APIErrorFallback):
+        status_code: Optional[int] = None
+
+    class _APIConnectionErrorFallback(_APIErrorFallback):
+        pass
+
+    class _APITimeoutErrorFallback(_APIConnectionErrorFallback):
+        pass
+
+    class _RateLimitErrorFallback(_APIStatusErrorFallback):
+        pass
+
+    OpenAIError = _OpenAIErrorFallback
+    APIError = _APIErrorFallback
+    APIStatusError = _APIStatusErrorFallback
+    APIConnectionError = _APIConnectionErrorFallback
+    APITimeoutError = _APITimeoutErrorFallback
+    RateLimitError = _RateLimitErrorFallback
 
 
 _LOG_DIR: Optional[Path] = None
@@ -20,6 +54,39 @@ _RESPONSE_COUNT = 0
 
 # Counter used to assign sequential IDs to nodes
 _NODE_COUNTER = 0
+
+
+def _get_env_float(name: str, default: float) -> float:
+    """Return a float from ``os.environ`` falling back to ``default``."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_env_int(name: str, default: int) -> int:
+    """Return an integer from ``os.environ`` falling back to ``default``."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+_OPENAI_REQUEST_TIMEOUT = max(0.0, _get_env_float("OPENAI_REQUEST_TIMEOUT", 60.0))
+_OPENAI_MAX_RETRIES = max(0, _get_env_int("OPENAI_MAX_RETRIES", 5))
+_OPENAI_INITIAL_RETRY_DELAY = max(0.0, _get_env_float("OPENAI_INITIAL_RETRY_DELAY", 1.0))
+_OPENAI_MAX_RETRY_DELAY = max(
+    _OPENAI_INITIAL_RETRY_DELAY, _get_env_float("OPENAI_MAX_RETRY_DELAY", 30.0)
+)
+_OPENAI_RETRY_JITTER = max(0.0, _get_env_float("OPENAI_RETRY_JITTER", 0.1))
 
 
 def _next_id() -> str:
@@ -130,6 +197,55 @@ def _store_final_tree(tree: Any) -> None:
         pass
 
 
+def _is_retryable_openai_error(exc: BaseException) -> bool:
+    """Return ``True`` if the given OpenAI exception should be retried."""
+
+    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status_code = getattr(exc, "status_code", None)
+        if status_code is None:
+            return True
+        if status_code == 429:
+            return True
+        if 500 <= status_code < 600:
+            return True
+        return False
+    return False
+
+
+async def _create_response_with_retry(
+    client: "AsyncOpenAI", request_kwargs: Dict[str, Any]
+) -> Any:
+    """Call ``client.responses.create`` with retries and a request timeout."""
+
+    options = dict(request_kwargs)
+    options.setdefault("timeout", _OPENAI_REQUEST_TIMEOUT)
+
+    retries = 0
+    while True:
+        try:
+            return await client.responses.create(**options)
+        except OpenAIError as exc:
+            if not _is_retryable_openai_error(exc) or retries >= _OPENAI_MAX_RETRIES:
+                raise
+
+            delay = min(
+                _OPENAI_MAX_RETRY_DELAY,
+                _OPENAI_INITIAL_RETRY_DELAY * (2**retries),
+            )
+            jitter = random.uniform(0.0, delay * _OPENAI_RETRY_JITTER)
+            sleep_for = delay + jitter
+            if sleep_for > 0:
+                print(
+                    (
+                        f"OpenAI request failed ({exc!s}); retrying in "
+                        f"{sleep_for:.2f}s"
+                    ),
+                    file=sys.stderr,
+                )
+                await asyncio.sleep(sleep_for)
+            retries += 1
 @dataclass
 class DAG:
     """Simple in-memory representation of a DAG."""
@@ -333,7 +449,7 @@ async def expand_layer(
     if service_tier:
         request_kwargs["service_tier"] = service_tier
 
-    response = await client.responses.create(**request_kwargs)
+    response = await _create_response_with_retry(client, request_kwargs)
 
     _store_response(response)
 
