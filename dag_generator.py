@@ -218,6 +218,28 @@ def _store_final_tree(tree: Any) -> None:
         pass
 
 
+def _store_error_messages(messages: List[str]) -> None:
+    """Append the given error messages to a log file in the output directory."""
+
+    if not messages:
+        return
+
+    try:
+        log_dir = _ensure_log_dir()
+    except Exception:
+        return
+
+    path = log_dir / "errors.log"
+    timestamp = datetime.now().isoformat()
+
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            for message in messages:
+                fh.write(f"[{timestamp}] {message}\n")
+    except Exception:
+        pass
+
+
 def _is_retryable_openai_error(exc: BaseException) -> bool:
     """Return ``True`` if the given OpenAI exception should be retried."""
 
@@ -707,6 +729,11 @@ def main() -> None:
         )
     except OpenAIMaxRetriesExceededError as exc:
         exit_code = getattr(os, "EX_TEMPFAIL", 75)
+        messages = [f"{type(exc).__name__}: {exc}"]
+        last_exception = getattr(exc, "last_exception", None)
+        if last_exception is not None:
+            messages.append(f"{type(last_exception).__name__}: {last_exception}")
+        _store_error_messages(messages)
         print(exc, file=sys.stderr)
         sys.exit(exit_code)
     nested = dag.to_nested([s.id for s in seeds])
