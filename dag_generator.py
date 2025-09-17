@@ -56,6 +56,27 @@ _RESPONSE_COUNT = 0
 _NODE_COUNTER = 0
 
 
+class OpenAIMaxRetriesExceededError(RuntimeError):
+    """Raised when OpenAI requests exhaust the configured retry budget."""
+
+    def __init__(
+        self,
+        *,
+        attempts: int,
+        max_retries: int,
+        last_exception: BaseException,
+    ) -> None:
+        message = (
+            "OpenAI request failed after "
+            f"{attempts} attempt(s); max retries is {max_retries}. "
+            f"Last error: {last_exception}"
+        )
+        super().__init__(message)
+        self.attempts = attempts
+        self.max_retries = max_retries
+        self.last_exception = last_exception
+
+
 def _get_env_float(name: str, default: float) -> float:
     """Return a float from ``os.environ`` falling back to ``default``."""
 
@@ -227,8 +248,15 @@ async def _create_response_with_retry(
         try:
             return await client.responses.create(**options)
         except OpenAIError as exc:
-            if not _is_retryable_openai_error(exc) or retries >= _OPENAI_MAX_RETRIES:
+            if not _is_retryable_openai_error(exc):
                 raise
+            if retries >= _OPENAI_MAX_RETRIES:
+                attempts = retries + 1
+                raise OpenAIMaxRetriesExceededError(
+                    attempts=attempts,
+                    max_retries=_OPENAI_MAX_RETRIES,
+                    last_exception=exc,
+                ) from exc
 
             delay = min(
                 _OPENAI_MAX_RETRY_DELAY,
@@ -663,19 +691,24 @@ def main() -> None:
         with args.sys_prompt_file as f:
             sys_prompt_append = f.read()
 
-    dag = asyncio.run(
-        build_dag(
-            seeds,
-            args.max_nodes,
-            args.max_depth,
-            args.max_fanout,
-            args.initial_fanout,
-            args.model,
-            sys_prompt_append,
-            args.reasoning_effort,
-            args.service_tier,
+    try:
+        dag = asyncio.run(
+            build_dag(
+                seeds,
+                args.max_nodes,
+                args.max_depth,
+                args.max_fanout,
+                args.initial_fanout,
+                args.model,
+                sys_prompt_append,
+                args.reasoning_effort,
+                args.service_tier,
+            )
         )
-    )
+    except OpenAIMaxRetriesExceededError as exc:
+        exit_code = getattr(os, "EX_TEMPFAIL", 75)
+        print(exc, file=sys.stderr)
+        sys.exit(exit_code)
     nested = dag.to_nested([s.id for s in seeds])
     _store_final_tree(nested)
     print(json.dumps(nested, indent=2))
