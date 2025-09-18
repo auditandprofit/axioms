@@ -357,7 +357,7 @@ class DAG:
         return [build(root) for root in roots]
 
 
-def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
+def make_functions(forced_fanout: Optional[int]) -> List[Dict[str, Any]]:
     functions = [
         {
             "name": "stop_expansion",
@@ -412,13 +412,22 @@ def make_functions(max_fanout: Optional[int]) -> List[Dict[str, Any]]:
             },
         },
     ]
-    if max_fanout is not None:
-        functions[1]["parameters"]["properties"]["expansions"]["items"]["properties"]["children"]["maxItems"] = max_fanout
+    if forced_fanout is not None:
+        child_schema = (
+            functions[1][
+                "parameters"
+            ]["properties"]["expansions"]["items"]["properties"]["children"]
+        )
+        child_schema["description"] = (
+            f"Child nodes to attach; must contain exactly {forced_fanout} entries"
+        )
+        child_schema["minItems"] = forced_fanout
+        child_schema["maxItems"] = forced_fanout
     return functions
 
 
 def make_system_prompt(
-    max_fanout: Optional[int], append: Optional[str] = None
+    forced_fanout: Optional[int], append: Optional[str] = None
 ) -> str:
     prompt = (
         "You expand nodes in a directed acyclic graph. Each node has an 'id' in the "
@@ -435,8 +444,11 @@ def make_system_prompt(
         "tools for the same node. When creating children, obey any stated limits on "
         "the number of children per parent."
     )
-    if max_fanout is not None:
-        prompt += f" Do not propose more than {max_fanout} child nodes per parent."
+    if forced_fanout is not None:
+        prompt += (
+            f" When expanding a node, you must propose exactly {forced_fanout} child "
+            "nodes (no more, no fewer)."
+        )
     if append:
         prompt += "\n" + append.strip()
     return prompt
@@ -447,7 +459,7 @@ async def expand_layer(
     history_layers: List[Dict[str, Any]],
     current_layer_payload: Dict[str, Any],
     model: str,
-    max_fanout: Optional[int] = None,
+    forced_fanout: Optional[int] = None,
     system_prompt_append: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     service_tier: Optional[str] = None,
@@ -459,14 +471,14 @@ async def expand_layer(
         history_layers: Previously generated layers to replay to the model.
         current_layer_payload: Description of the layer currently being expanded.
         model: Name of the OpenAI model to use.
-        max_fanout: Maximum number of children the model may return per node.
+        forced_fanout: Exact number of children the model must return per node.
         system_prompt_append: Additional text appended to the system prompt.
     """
 
     messages = [
         {
             "role": "system",
-            "content": make_system_prompt(max_fanout, system_prompt_append),
+            "content": make_system_prompt(forced_fanout, system_prompt_append),
         }
     ]
     for layer_payload in history_layers:
@@ -485,7 +497,7 @@ async def expand_layer(
         }
     )
 
-    functions = make_functions(max_fanout)
+    functions = make_functions(forced_fanout)
 
     request_kwargs: Dict[str, Any] = {
         "model": model,
@@ -525,6 +537,16 @@ async def expand_layer(
                         text = c.get("text")
                         if text:
                             children_nodes.append(Node(id=_next_id(), text=text))
+                    if (
+                        forced_fanout is not None
+                        and children_nodes
+                        and len(children_nodes) != forced_fanout
+                    ):
+                        raise ValueError(
+                            "new_edges for node"
+                            f" {node_id!r} returned {len(children_nodes)} child nodes"
+                            f" (expected {forced_fanout})"
+                        )
                     expansions[node_id] = children_nodes
             elif name == "stop_expansion":
                 node_id = payload.get("node_id")
@@ -538,8 +560,8 @@ async def build_dag(
     seeds: List[Node],
     max_nodes: int = 50,
     max_depth: Optional[int] = None,
-    max_fanout: Optional[int] = None,
-    initial_fanout: Optional[int] = None,
+    forced_fanout: Optional[int] = None,
+    initial_forced_fanout: Optional[int] = None,
     model: str = "gpt-4o-mini",
     system_prompt_append: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -577,9 +599,9 @@ async def build_dag(
         )
 
         current_fanout = (
-            initial_fanout
-            if context.depth == 0 and initial_fanout is not None
-            else max_fanout
+            initial_forced_fanout
+            if context.depth == 0 and initial_forced_fanout is not None
+            else forced_fanout
         )
 
         expansions = await expand_layer(
@@ -595,9 +617,23 @@ async def build_dag(
 
         history_for_children = context.history + [copy.deepcopy(base_payload)]
 
+        if current_fanout is not None and context.node.id not in expansions:
+            raise ValueError(
+                "Expected forced fanout expansion for node"
+                f" {context.node.id!r} but received no tool call."
+            )
+
         children = expansions.get(context.node.id, [])
-        if current_fanout is not None:
-            children = children[:current_fanout]
+
+        if (
+            current_fanout is not None
+            and children
+            and len(children) != current_fanout
+        ):
+            raise ValueError(
+                f"Node {context.node.id!r} returned {len(children)} child nodes"
+                f" (expected {current_fanout})."
+            )
 
         if not children:
             continue
@@ -658,16 +694,26 @@ def main() -> None:
         help="Maximum depth to expand (0 disables expansion)",
     )
     parser.add_argument(
+        "--forced-fanout",
         "--max-fanout",
+        dest="forced_fanout",
         type=int,
         default=None,
-        help="Maximum number of children per node",
+        help=(
+            "Exact number of children each expanded node must produce"
+            " (alias: --max-fanout)"
+        ),
     )
     parser.add_argument(
+        "--initial-forced-fanout",
         "--initial-fanout",
+        dest="initial_forced_fanout",
         type=int,
         default=None,
-        help="Maximum number of children for the seed layer",
+        help=(
+            "Exact number of children nodes in the seed layer must produce"
+            " (alias: --initial-fanout)"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -719,8 +765,8 @@ def main() -> None:
                 seeds,
                 args.max_nodes,
                 args.max_depth,
-                args.max_fanout,
-                args.initial_fanout,
+                args.forced_fanout,
+                args.initial_forced_fanout,
                 args.model,
                 sys_prompt_append,
                 args.reasoning_effort,
