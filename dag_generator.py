@@ -646,6 +646,7 @@ async def build_dag(
         next_depth = context.depth + 1
 
         scheduled_children: List[FlowContext] = []
+        skipped_due_to_depth = 0
         for child in children:
             if len(dag.edges) >= max_nodes:
                 break
@@ -661,12 +662,20 @@ async def build_dag(
                             history=list(history_for_children),
                         )
                     )
+                else:
+                    skipped_due_to_depth += 1
 
         if children:
-            print(
-                f"Queued {len(scheduled_children)} flow(s) at depth {next_depth} from {context.node.id}",
-                file=sys.stderr,
+            message = (
+                f"Queued {len(scheduled_children)} flow(s) "
+                f"at depth {next_depth} from {context.node.id}"
             )
+            if skipped_due_to_depth:
+                suffix = "child" if skipped_due_to_depth == 1 else "children"
+                message += (
+                    f" (max depth reached for {skipped_due_to_depth} {suffix})"
+                )
+            print(message, file=sys.stderr)
 
         if scheduled_children:
             await asyncio.gather(*(expand_context(child) for child in scheduled_children))
