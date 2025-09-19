@@ -31,7 +31,10 @@ You can further control the graph generation using additional flags:
 python dag_generator.py "root node" --max-depth 3 --forced-fanout 2
 ```
 
-* `--max-depth` limits how deep the expansion proceeds (0 disables expansion).
+* `--max-depth` limits how deep the expansion proceeds. The value counts the
+  total number of layers (including the seed layer); values <= 1 keep only the
+  seed layer, 0 disables expansion, and nodes at the maximum depth are treated
+  as leaves.
 * `--forced-fanout` enforces that each expanded node yields exactly the given number of children (alias: `--max-fanout`).
 * `--initial-forced-fanout` enforces the same restriction for only the seed layer (alias: `--initial-fanout`).
 * `--model` selects the OpenAI model to use (default `gpt-4o-mini`).
