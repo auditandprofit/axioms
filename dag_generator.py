@@ -583,8 +583,12 @@ async def build_dag(
     seen = {seed.id for seed in seeds}
     node_parents: Dict[str, str] = {}
 
+    stop_depth: Optional[int] = None
+    if max_depth is not None:
+        stop_depth = max_depth - 1
+
     initial_flows: List[FlowContext] = []
-    if max_depth is None or max_depth > 0:
+    if max_depth is None or max_depth > 1:
         for seed in seeds:
             initial_flows.append(FlowContext(node=seed, depth=0))
 
@@ -592,6 +596,8 @@ async def build_dag(
         if len(dag.edges) >= max_nodes:
             return
         if max_depth is not None and context.depth >= max_depth:
+            return
+        if stop_depth is not None and context.depth >= stop_depth:
             return
 
         base_payload = _layer_to_payload(context.depth, [context.node], node_parents)
@@ -654,7 +660,13 @@ async def build_dag(
             if child.id not in seen:
                 seen.add(child.id)
                 node_parents[child.id] = context.node.id
-                if max_depth is None or next_depth < max_depth:
+                should_schedule = True
+                if max_depth is not None and next_depth >= max_depth:
+                    should_schedule = False
+                if should_schedule and stop_depth is not None and next_depth >= stop_depth:
+                    should_schedule = False
+
+                if should_schedule:
                     scheduled_children.append(
                         FlowContext(
                             node=child,
@@ -714,7 +726,11 @@ def main() -> None:
         "--max-depth",
         type=int,
         default=None,
-        help="Maximum depth to expand (0 disables expansion)",
+        help=(
+            "Maximum number of layers to generate (including the seed layer). "
+            "Values <= 1 keep only the seed layer, 0 disables expansion, and "
+            "nodes at the maximum depth become leaves."
+        ),
     )
     parser.add_argument(
         "--forced-fanout",
