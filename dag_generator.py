@@ -727,6 +727,15 @@ def main() -> None:
         help="OpenAI model to use",
     )
     parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Request timeout in seconds for OpenAI API calls. Overrides the "
+            "OPENAI_REQUEST_TIMEOUT environment variable."
+        ),
+    )
+    parser.add_argument(
         "--sys-prompt-file",
         type=argparse.FileType("r"),
         help="File whose contents are appended to the system prompt",
@@ -740,6 +749,11 @@ def main() -> None:
         help="Service tier value forwarded to the OpenAI API",
     )
     args = parser.parse_args()
+
+    if args.request_timeout is not None:
+        value = max(0.0, float(args.request_timeout))
+        global _OPENAI_REQUEST_TIMEOUT
+        _OPENAI_REQUEST_TIMEOUT = value
 
     def parse_seed(s: str) -> Node:
         return Node(_next_id(), s.strip())
