@@ -677,20 +677,28 @@ async def build_dag(
                 else:
                     skipped_due_to_depth += 1
 
-        if children:
-            message = (
-                f"Queued {len(scheduled_children)} flow(s) "
-                f"at depth {next_depth} from {context.node.id}"
-            )
+        if not scheduled_children:
             if skipped_due_to_depth:
                 suffix = "child" if skipped_due_to_depth == 1 else "children"
-                message += (
-                    f" (max depth reached for {skipped_due_to_depth} {suffix})"
+                print(
+                    (
+                        f"Reached max depth at depth {next_depth} from {context.node.id}; "
+                        f"treating {skipped_due_to_depth} {suffix} as leaf nodes"
+                    ),
+                    file=sys.stderr,
                 )
-            print(message, file=sys.stderr)
+            return
 
-        if scheduled_children:
-            await asyncio.gather(*(expand_context(child) for child in scheduled_children))
+        message = (
+            f"Queued {len(scheduled_children)} flow(s) "
+            f"at depth {next_depth} from {context.node.id}"
+        )
+        if skipped_due_to_depth:
+            suffix = "child" if skipped_due_to_depth == 1 else "children"
+            message += f" (max depth reached for {skipped_due_to_depth} {suffix})"
+        print(message, file=sys.stderr)
+
+        await asyncio.gather(*(expand_context(child) for child in scheduled_children))
 
     if initial_flows:
         await asyncio.gather(*(expand_context(flow) for flow in initial_flows))
