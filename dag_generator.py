@@ -4,11 +4,10 @@ import json
 import os
 import random
 import sys
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from openai import (
@@ -504,7 +503,7 @@ async def expand_layer(
         "input": messages,
         "tools": [{**f, "type": "function"} for f in functions],
         "tool_choice": "auto",
-        "parallel_tool_calls": False,
+        "parallel_tool_calls": True,
     }
     if reasoning_effort:
         request_kwargs["reasoning"] = {"effort": reasoning_effort}
@@ -584,16 +583,16 @@ async def build_dag(
     seen = {seed.id for seed in seeds}
     node_parents: Dict[str, str] = {}
 
-    flows: Deque[FlowContext] = deque()
+    initial_flows: List[FlowContext] = []
     if max_depth is None or max_depth > 0:
         for seed in seeds:
-            flows.append(FlowContext(node=seed, depth=0))
+            initial_flows.append(FlowContext(node=seed, depth=0))
 
-    while flows and len(dag.edges) < max_nodes:
-        context = flows.popleft()
-
+    async def expand_context(context: FlowContext) -> None:
+        if len(dag.edges) >= max_nodes:
+            return
         if max_depth is not None and context.depth >= max_depth:
-            continue
+            return
 
         base_payload = _layer_to_payload(context.depth, [context.node], node_parents)
         request_payload = copy.deepcopy(base_payload)
@@ -642,14 +641,11 @@ async def build_dag(
             )
 
         if not children:
-            continue
+            return
 
         next_depth = context.depth + 1
-        print(
-            f"Queued {len(children)} flow(s) at depth {next_depth} from {context.node.id}",
-            file=sys.stderr,
-        )
 
+        scheduled_children: List[FlowContext] = []
         for child in children:
             if len(dag.edges) >= max_nodes:
                 break
@@ -658,13 +654,25 @@ async def build_dag(
                 seen.add(child.id)
                 node_parents[child.id] = context.node.id
                 if max_depth is None or next_depth < max_depth:
-                    flows.append(
+                    scheduled_children.append(
                         FlowContext(
                             node=child,
                             depth=next_depth,
                             history=list(history_for_children),
                         )
                     )
+
+        if children:
+            print(
+                f"Queued {len(scheduled_children)} flow(s) at depth {next_depth} from {context.node.id}",
+                file=sys.stderr,
+            )
+
+        if scheduled_children:
+            await asyncio.gather(*(expand_context(child) for child in scheduled_children))
+
+    if initial_flows:
+        await asyncio.gather(*(expand_context(flow) for flow in initial_flows))
 
     return dag
 
