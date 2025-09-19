@@ -529,7 +529,10 @@ async def expand_layer(
                 if not exp_payload:
                     continue
                 for exp in exp_payload:
-                    node_id = exp.get("node_id")
+                    node_id_raw = exp.get("node_id")
+                    if not node_id_raw:
+                        continue
+                    node_id = str(node_id_raw).strip()
                     if not node_id:
                         continue
                     children_nodes: List[Node] = []
@@ -549,7 +552,10 @@ async def expand_layer(
                         )
                     expansions[node_id] = children_nodes
             elif name == "stop_expansion":
-                node_id = payload.get("node_id")
+                node_id_raw = payload.get("node_id")
+                if not node_id_raw:
+                    continue
+                node_id = str(node_id_raw).strip()
                 if node_id:
                     expansions[node_id] = []
 
